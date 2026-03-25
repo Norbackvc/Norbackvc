@@ -52,4 +52,4 @@ pos_system/
 
 ## Licencia
 
-MIT
+Todos los Derechos Reservados @Norbackvc 2026
