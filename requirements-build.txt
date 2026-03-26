@@ -1,0 +1,8 @@
+# Dependencias para compilar el EXE con PyInstaller
+# El código en sí solo usa módulos estándar de Python (tkinter, sqlite3, etc.)
+
+PyInstaller>=6.0.0
+pyinstaller-hooks-contrib>=2024.0
+
+# Para la generación de PDFs (opcional)
+# reportlab>=3.6.0
