@@ -31,7 +31,7 @@ def build_receipt(sale: Dict) -> str:
         center(phone),
     ]
     if rfc:
-        lines.append(center(f"RFC: {rfc}"))
+        lines.append(center(f"RUC: {rfc}"))
     lines += [
         sep,
         f"Folio: {sale['folio']}",

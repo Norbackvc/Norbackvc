@@ -75,7 +75,7 @@ class Cart:
 
     @property
     def total(self) -> float:
-        return round(self.subtotal - self.discount_amount + self.tax_amount, 2)
+        return round(self.subtotal - self.discount_amount, 2)
 
     @property
     def change_due(self) -> float:

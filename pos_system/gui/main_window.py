@@ -3,6 +3,9 @@ Main POS application window with tabbed interface.
 """
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import os
+import subprocess
+import platform
 from .. import auth, inventory as inv, sales as sales_mod
 from ..sales import Cart
 from ..receipt import build_receipt
@@ -11,6 +14,12 @@ from .styles import *
 from .products import ProductsFrame
 from .customers import CustomersFrame
 from .reports_view import ReportsFrame
+
+try:
+    from ..pdf_generator import generate_pdf_receipt
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 
 class MainWindow(tk.Tk):
@@ -71,15 +80,21 @@ class MainWindow(tk.Tk):
         self.nb.add(self.prod_frame, text="  📦 Productos  ")
 
         # Tab 3: Customers
-        self.cust_frame = CustomersFrame(self.nb)
-        self.nb.add(self.cust_frame, text="  👥 Clientes  ")
+        if auth.can("manage_customers"):
+            self.cust_frame = CustomersFrame(self.nb)
+            self.nb.add(self.cust_frame, text="  👥 Clientes  ")
+        else:
+            self.cust_frame = None
 
         # Tab 4: Reports
-        self.rep_frame = ReportsFrame(self.nb)
-        self.nb.add(self.rep_frame, text="  📊 Reportes  ")
+        if auth.can("view_reports"):
+            self.rep_frame = ReportsFrame(self.nb)
+            self.nb.add(self.rep_frame, text="  📊 Reportes  ")
+        else:
+            self.rep_frame = None
 
         # Tab 5: Settings (admin only)
-        if auth.is_admin():
+        if auth.can("manage_users"):
             self.settings_frame = SettingsFrame(self.nb)
             self.nb.add(self.settings_frame, text="  ⚙ Configuración  ")
 
@@ -90,9 +105,9 @@ class MainWindow(tk.Tk):
         tab = self.nb.index(self.nb.select())
         if tab == 1:
             self.prod_frame.refresh()
-        elif tab == 2:
+        elif tab == 2 and self.cust_frame is not None:
             self.cust_frame.refresh()
-        elif tab == 3:
+        elif tab == 3 and self.rep_frame is not None:
             self.rep_frame.refresh()
 
     # ── POS Tab ───────────────────────────────────────────────────────────────
@@ -190,9 +205,13 @@ class MainWindow(tk.Tk):
                  bg=PANEL_BG, fg=TEXT_DIM).pack(side="left")
         self.discount_var = tk.StringVar(value="0")
         self.discount_var.trace_add("write", self._on_discount_change)
-        tk.Entry(disco_frame, textvariable=self.discount_var, width=5, font=FONT_BODY,
+        self.discount_entry = tk.Entry(disco_frame, textvariable=self.discount_var, width=5, font=FONT_BODY,
                  bg=INPUT_BG, fg=TEXT, insertbackground=TEXT,
-                 relief="flat", bd=4).pack(side="right")
+                 relief="flat", bd=4)
+        self.discount_entry.pack(side="right")
+        if not auth.can("apply_discounts"):
+            self.discount_var.set("0")
+            self.discount_entry.configure(state="disabled")
 
         # Payment method
         pay_frame = tk.Frame(right, bg=PANEL_BG, padx=12, pady=6)
@@ -218,8 +237,7 @@ class MainWindow(tk.Tk):
                  bg=INPUT_BG, fg=SUCCESS, insertbackground=SUCCESS,
                  relief="flat", bd=6).pack(fill="x", pady=4)
 
-        self.lbl_change = self._total_row(right, "Cambio:", font=FONT_H2, fg=WARNING,
-                                           parent=right)
+        self.lbl_change = self._total_row(right, "Cambio:", font=FONT_H2, fg=WARNING)
 
         # Process button
         tk.Button(right, text="✅  COBRAR", command=self._process_sale,
@@ -327,6 +345,9 @@ class MainWindow(tk.Tk):
             self._refresh_cart()
 
     def _line_discount(self):
+        if not auth.can("apply_discounts"):
+            messagebox.showwarning("Sin permiso", "No tienes permiso para aplicar descuentos.", parent=self)
+            return
         idx = self._selected_cart_index()
         if idx is None:
             return
@@ -395,7 +416,19 @@ class MainWindow(tk.Tk):
 
         sale = sales_mod.get_sale(sale_id)
         receipt_text = build_receipt(sale)
-        ReceiptWindow(self, receipt_text)
+        
+        # Generate PDF if available
+        pdf_path = None
+        if PDF_AVAILABLE:
+            try:
+                pdf_path = generate_pdf_receipt(sale)
+            except Exception as e:
+                messagebox.showwarning("PDF", f"No se pudo generar PDF: {e}", parent=self)
+        
+        if PDF_AVAILABLE and pdf_path:
+            ReceiptPDFWindow(self, receipt_text, pdf_path)
+        else:
+            ReceiptWindow(self, receipt_text)
 
         self._clear_cart()
         self._refresh_low_stock_badge()
@@ -576,6 +609,11 @@ class ReceiptWindow(tk.Toplevel):
         self.title("Recibo de Venta")
         self.configure(bg=DARK_BG)
         self.geometry("440x600")
+        self.transient(parent)
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(500, lambda: self.attributes("-topmost", False))
+        self.focus_force()
 
         tk.Label(self, text="Recibo", font=FONT_H1,
                  bg=DARK_BG, fg=TEXT).pack(pady=(10, 4))
@@ -602,6 +640,80 @@ class ReceiptWindow(tk.Toplevel):
     def _copy(self):
         self.clipboard_clear()
         self.clipboard_append(self.txt.get("1.0", "end"))
+
+
+# ── Receipt PDF Window ─────────────────────────────────────────────────────────
+
+class ReceiptPDFWindow(tk.Toplevel):
+    def __init__(self, parent, receipt_text: str, pdf_path: str):
+        super().__init__(parent)
+        self.title("Boleta de Venta (PDF)")
+        self.configure(bg=DARK_BG)
+        self.geometry("480x650")
+        self.pdf_path = pdf_path
+        self.transient(parent)
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(500, lambda: self.attributes("-topmost", False))
+        self.focus_force()
+
+        tk.Label(self, text="Boleta de Venta", font=FONT_H1,
+                 bg=DARK_BG, fg=TEXT).pack(pady=(10, 4))
+
+        txt_frame = tk.Frame(self, bg=CARD_BG, padx=8, pady=8)
+        txt_frame.pack(fill="both", expand=True, padx=12, pady=4)
+
+        self.txt = tk.Text(txt_frame, font=FONT_MONO, bg=CARD_BG, fg=TEXT,
+                            relief="flat", wrap="none", state="normal", height=20)
+        self.txt.insert("1.0", receipt_text)
+        self.txt.config(state="disabled")
+        vsb = ttk.Scrollbar(txt_frame, orient="vertical", command=self.txt.yview)
+        self.txt.configure(yscrollcommand=vsb.set)
+        self.txt.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        row = tk.Frame(self, bg=DARK_BG)
+        row.pack(fill="x", padx=12, pady=8)
+        tk.Button(row, text="📋 Copiar", command=self._copy,
+                  **BTN_NEUTRAL).pack(side="left", padx=2)
+        tk.Button(row, text="💾 Guardar PDF", command=self._save,
+                  **BTN_PRIMARY).pack(side="left", padx=2)
+        tk.Button(row, text="🖨 Imprimir", command=self._print,
+                  **BTN_PRIMARY).pack(side="left", padx=2)
+        tk.Button(row, text="Cerrar", command=self.destroy,
+                  **BTN_NEUTRAL).pack(side="right")
+
+    def _copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.txt.get("1.0", "end"))
+
+    def _save(self):
+        from tkinter import filedialog
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            initialfile=os.path.basename(self.pdf_path),
+            parent=self
+        )
+        if filename:
+            try:
+                import shutil
+                shutil.copy(self.pdf_path, filename)
+                messagebox.showinfo("Éxito", f"Boleta guardada en:\n{filename}", parent=self)
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo guardar: {e}", parent=self)
+
+    def _print(self):
+        try:
+            if platform.system() == "Windows":
+                os.startfile(self.pdf_path, "print")
+            elif platform.system() == "Darwin":  # macOS
+                subprocess.run(["lp", self.pdf_path])
+            else:  # Linux
+                subprocess.run(["lp", self.pdf_path])
+            messagebox.showinfo("Imprimir", "Boleta enviada a la impresora.", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo imprimir: {e}", parent=self)
 
 
 # ── Settings Frame ─────────────────────────────────────────────────────────────
@@ -632,7 +744,7 @@ class SettingsFrame(tk.Frame):
             ("Nombre de la tienda", "store_name"),
             ("Dirección", "store_address"),
             ("Teléfono", "store_phone"),
-            ("RFC", "store_rfc"),
+            ("RUC", "store_rfc"),
             ("Tasa IVA (%)", "tax_rate"),
             ("Moneda", "currency"),
             ("Símbolo monetario", "currency_symbol"),
@@ -647,7 +759,11 @@ class SettingsFrame(tk.Frame):
             row.pack(fill="x", pady=4)
             tk.Label(row, text=label, font=FONT_BODY, bg=DARK_BG,
                      fg=TEXT_DIM, width=22, anchor="w").pack(side="left")
-            var = tk.StringVar(value=get_setting(key))
+            # Compatibilidad: si la UI llegó a guardar store_ruc, lo mostramos aquí.
+            initial_value = get_setting("store_ruc") if key == "store_rfc" else ""
+            if not initial_value:
+                initial_value = get_setting(key)
+            var = tk.StringVar(value=initial_value)
             tk.Entry(row, textvariable=var, font=FONT_BODY, bg=INPUT_BG,
                      fg=TEXT, insertbackground=TEXT, relief="flat", bd=4,
                      width=30).pack(side="left")
@@ -655,7 +771,11 @@ class SettingsFrame(tk.Frame):
 
         def save():
             for key, var in self._settings_vars.items():
-                set_setting(key, var.get().strip())
+                value = var.get().strip()
+                set_setting(key, value)
+                if key == "store_rfc":
+                    # Mantener compatibilidad con posibles lecturas futuras de store_ruc.
+                    set_setting("store_ruc", value)
             messagebox.showinfo("Guardado", "Configuración guardada correctamente.")
 
         tk.Button(parent, text="💾 Guardar configuración", command=save,
@@ -663,13 +783,17 @@ class SettingsFrame(tk.Frame):
 
     def _build_users_tab(self, parent):
         from .. import auth as auth_mod
+        if not auth_mod.can("manage_users"):
+            tk.Label(parent, text="No tienes permiso para gestionar usuarios.",
+                     font=FONT_BODY, bg=DARK_BG, fg=WARNING).pack(pady=20)
+            return
         tk.Label(parent, text="Gestión de Usuarios", font=FONT_H2,
                  bg=DARK_BG, fg=TEXT).pack(pady=(16, 8))
 
         toolbar = tk.Frame(parent, bg=DARK_BG)
         toolbar.pack(fill="x", padx=PAD)
         tk.Button(toolbar, text="+ Nuevo usuario",
-                  command=lambda: self._new_user(tree),
+              command=lambda: self._new_user(tree, load),
                   **BTN_PRIMARY).pack(side="left", padx=4)
 
         cols = ("ID", "Usuario", "Nombre", "Rol", "Activo")
@@ -711,19 +835,150 @@ class SettingsFrame(tk.Frame):
 
         bot = tk.Frame(parent, bg=DARK_BG, padx=PAD)
         bot.pack(fill="x")
+        tk.Button(bot, text="✏ Editar usuario",
+                  command=lambda: self._edit_user(tree, load, parent),
+                  **BTN_NEUTRAL).pack(side="left", padx=4)
         tk.Button(bot, text="🔑 Cambiar contraseña",
                   command=change_pw, **BTN_NEUTRAL).pack(side="left", padx=4)
         tk.Button(bot, text="🔄 Recargar", command=load,
                   **BTN_NEUTRAL).pack(side="left", padx=4)
         load()
 
-    def _new_user(self, tree):
+    def _edit_user(self, tree, refresh_callback=None, parent=None):
+        from .. import auth as auth_mod
+        sel = tree.selection()
+        if not sel:
+            messagebox.showwarning("Usuario", "Selecciona un usuario para editar.", parent=parent or self)
+            return
+
+        uid = int(sel[0])
+        user_row = None
+        for u in auth_mod.list_users():
+            if u["id"] == uid:
+                user_row = u
+                break
+        if not user_row:
+            messagebox.showerror("Error", "No se pudo cargar el usuario seleccionado.", parent=parent or self)
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Editar Usuario")
+        win.configure(bg=PANEL_BG)
+        win.resizable(False, False)
+        win.geometry("380x460")
+
+        tk.Label(win, text="Editar Usuario", font=FONT_H2,
+                 bg=PANEL_BG, fg=TEXT).pack(pady=(14, 8))
+
+        form = tk.Frame(win, bg=PANEL_BG)
+        form.pack(padx=24, fill="x")
+
+        username_var = tk.StringVar(value=user_row["username"])
+        full_name_var = tk.StringVar(value=user_row["full_name"])
+        role_var = tk.StringVar(value=user_row["role"])
+        active_var = tk.BooleanVar(value=bool(user_row["active"]))
+
+        def row_entry(label, var, state="normal"):
+            r = tk.Frame(form, bg=PANEL_BG)
+            r.pack(fill="x", pady=4)
+            tk.Label(r, text=label, font=FONT_SMALL, bg=PANEL_BG,
+                     fg=TEXT_DIM, width=20, anchor="w").pack(side="left")
+            tk.Entry(r, textvariable=var, font=FONT_BODY, bg=INPUT_BG,
+                     fg=TEXT, insertbackground=TEXT, relief="flat", bd=4,
+                     state=state).pack(side="left", fill="x", expand=True)
+
+        row_entry("Usuario", username_var, state="disabled")
+        row_entry("Nombre completo", full_name_var)
+
+        r_role = tk.Frame(form, bg=PANEL_BG)
+        r_role.pack(fill="x", pady=4)
+        tk.Label(r_role, text="Rol", font=FONT_SMALL, bg=PANEL_BG,
+                 fg=TEXT_DIM, width=20, anchor="w").pack(side="left")
+        ttk.Combobox(r_role, textvariable=role_var, values=["cashier", "admin"],
+                     state="readonly", width=14).pack(side="left")
+
+        r_active = tk.Frame(form, bg=PANEL_BG)
+        r_active.pack(fill="x", pady=4)
+        tk.Label(r_active, text="Activo", font=FONT_SMALL, bg=PANEL_BG,
+                 fg=TEXT_DIM, width=20, anchor="w").pack(side="left")
+        tk.Checkbutton(r_active, variable=active_var,
+                       bg=PANEL_BG, activebackground=PANEL_BG,
+                       selectcolor=INPUT_BG).pack(side="left")
+
+        perms = {
+            "can_manage_products": tk.BooleanVar(value=bool(user_row.get("can_manage_products", 0))),
+            "can_manage_customers": tk.BooleanVar(value=bool(user_row.get("can_manage_customers", 0))),
+            "can_view_reports": tk.BooleanVar(value=bool(user_row.get("can_view_reports", 0))),
+            "can_manage_users": tk.BooleanVar(value=bool(user_row.get("can_manage_users", 0))),
+            "can_apply_discounts": tk.BooleanVar(value=bool(user_row.get("can_apply_discounts", 1))),
+            "can_delete_receipts": tk.BooleanVar(value=bool(user_row.get("can_delete_receipts", 0))),
+            "can_delete_all_receipts": tk.BooleanVar(value=bool(user_row.get("can_delete_all_receipts", 0))),
+        }
+
+        perms_frame = tk.LabelFrame(win, text="Permisos", bg=PANEL_BG, fg=TEXT,
+                                    font=FONT_SMALL, padx=10, pady=6)
+        perms_frame.pack(fill="x", padx=24, pady=10)
+        labels = [
+            ("Gestionar productos", "can_manage_products"),
+            ("Gestionar clientes", "can_manage_customers"),
+            ("Ver reportes", "can_view_reports"),
+            ("Gestionar usuarios", "can_manage_users"),
+            ("Aplicar descuentos", "can_apply_discounts"),
+            ("Eliminar boletas", "can_delete_receipts"),
+            ("Eliminar todas las boletas", "can_delete_all_receipts"),
+        ]
+        for txt, key in labels:
+            tk.Checkbutton(perms_frame, text=txt, variable=perms[key],
+                           bg=PANEL_BG, fg=TEXT, selectcolor=INPUT_BG,
+                           activebackground=PANEL_BG, activeforeground=TEXT,
+                           font=FONT_SMALL).pack(anchor="w")
+
+        def sync_role_permissions(*_):
+            is_admin = role_var.get() == "admin"
+            state = "disabled" if is_admin else "normal"
+            for child in perms_frame.winfo_children():
+                child.configure(state=state)
+            if is_admin:
+                for var in perms.values():
+                    var.set(True)
+
+        role_var.trace_add("write", sync_role_permissions)
+        sync_role_permissions()
+
+        def save():
+            full_name = full_name_var.get().strip()
+            if not full_name:
+                messagebox.showerror("Error", "El nombre completo es obligatorio.", parent=win)
+                return
+            try:
+                auth_mod.update_user(
+                    uid,
+                    role_var.get(),
+                    full_name,
+                    1 if active_var.get() else 0,
+                    permissions={k: v.get() for k, v in perms.items()},
+                )
+                win.destroy()
+                if refresh_callback:
+                    refresh_callback()
+            except Exception as e:
+                messagebox.showerror("Error", str(e), parent=win)
+
+        btns = tk.Frame(win, bg=PANEL_BG)
+        btns.pack(fill="x", padx=24, pady=8)
+        tk.Button(btns, text="Cancelar", command=win.destroy,
+                  **BTN_NEUTRAL).pack(side="right", padx=4)
+        tk.Button(btns, text="Guardar cambios", command=save,
+                  **BTN_PRIMARY).pack(side="right", padx=4)
+
+    def _new_user(self, tree, refresh_callback=None):
         from .. import auth as auth_mod
         win = tk.Toplevel(self)
         win.title("Nuevo Usuario")
         win.configure(bg=PANEL_BG)
-        win.resizable(False, False)
-        win.geometry("360x340")
+        win.geometry("520x700")
+        win.minsize(500, 650)
+        win.resizable(True, True)
         tk.Label(win, text="Crear Usuario", font=FONT_H2,
                  bg=PANEL_BG, fg=TEXT).pack(pady=(14, 8))
         form = tk.Frame(win, bg=PANEL_BG)
@@ -751,6 +1006,48 @@ class SettingsFrame(tk.Frame):
         ttk.Combobox(r, textvariable=role_var, values=["cashier", "admin"],
                      state="readonly", width=14).pack(side="left")
 
+        perms = {
+            "can_manage_products": tk.BooleanVar(value=False),
+            "can_manage_customers": tk.BooleanVar(value=False),
+            "can_view_reports": tk.BooleanVar(value=False),
+            "can_manage_users": tk.BooleanVar(value=False),
+            "can_apply_discounts": tk.BooleanVar(value=True),
+            "can_delete_receipts": tk.BooleanVar(value=False),
+            "can_delete_all_receipts": tk.BooleanVar(value=False),
+        }
+
+        perms_frame = tk.LabelFrame(win, text="Permisos", bg=PANEL_BG, fg=TEXT,
+                                    font=FONT_SMALL, padx=10, pady=6)
+        perms_frame.pack(fill="x", padx=24, pady=6)
+        labels = [
+            ("Gestionar productos", "can_manage_products"),
+            ("Gestionar clientes", "can_manage_customers"),
+            ("Ver reportes", "can_view_reports"),
+            ("Gestionar usuarios", "can_manage_users"),
+            ("Aplicar descuentos", "can_apply_discounts"),
+            ("Eliminar boletas", "can_delete_receipts"),
+            ("Eliminar todas las boletas", "can_delete_all_receipts"),
+        ]
+        for txt, key in labels:
+            tk.Checkbutton(perms_frame, text=txt, variable=perms[key],
+                           bg=PANEL_BG, fg=TEXT, selectcolor=INPUT_BG,
+                           activebackground=PANEL_BG, activeforeground=TEXT,
+                           font=FONT_SMALL).pack(anchor="w")
+
+        def sync_role_permissions(*_):
+            is_admin = role_var.get() == "admin"
+            for var in perms.values():
+                var.set(is_admin or var.get())
+            state = "disabled" if is_admin else "normal"
+            for child in perms_frame.winfo_children():
+                child.configure(state=state)
+            if is_admin:
+                for var in perms.values():
+                    var.set(True)
+
+        role_var.trace_add("write", sync_role_permissions)
+        sync_role_permissions()
+
         def save():
             u = vars_["username"].get().strip()
             n = vars_["full_name"].get().strip()
@@ -763,8 +1060,16 @@ class SettingsFrame(tk.Frame):
                 messagebox.showerror("Error", "Las contraseñas no coinciden.", parent=win)
                 return
             try:
-                auth_mod.create_user(u, p, role_var.get(), n)
+                auth_mod.create_user(
+                    u,
+                    p,
+                    role_var.get(),
+                    n,
+                    permissions={k: v.get() for k, v in perms.items()},
+                )
                 win.destroy()
+                if refresh_callback:
+                    refresh_callback()
             except Exception as e:
                 messagebox.showerror("Error", str(e), parent=win)
 

@@ -18,6 +18,7 @@ class ProductsFrame(tk.Frame):
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _build(self) -> None:
+        self._can_manage_products = auth.can("manage_products")
         # Toolbar
         toolbar = tk.Frame(self, bg=PANEL_BG, padx=PAD, pady=8)
         toolbar.pack(fill="x")
@@ -25,7 +26,7 @@ class ProductsFrame(tk.Frame):
         tk.Label(toolbar, text="📦  Productos", font=FONT_H1,
                  bg=PANEL_BG, fg=TEXT).pack(side="left")
 
-        if auth.is_admin():
+        if self._can_manage_products:
             tk.Button(toolbar, text="+ Nuevo", command=self._new,
                       **BTN_PRIMARY).pack(side="right", padx=4)
             tk.Button(toolbar, text="Categorías", command=self._manage_categories,
@@ -83,7 +84,7 @@ class ProductsFrame(tk.Frame):
         self.tree.bind("<Double-1>", lambda e: self._edit_selected())
 
         # Bottom action bar
-        if auth.is_admin():
+        if self._can_manage_products:
             bot = tk.Frame(self, bg=DARK_BG, padx=PAD, pady=6)
             bot.pack(fill="x")
             tk.Button(bot, text="✏ Editar", command=self._edit_selected,
@@ -130,11 +131,17 @@ class ProductsFrame(tk.Frame):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _new(self) -> None:
+        if not self._can_manage_products:
+            messagebox.showwarning("Sin permiso", "No tienes permiso para crear productos.", parent=self)
+            return
         ProductDialog(self, title="Nuevo Producto").grab_set()
         self.wait_window(self.winfo_children()[-1])
         self.refresh()
 
     def _edit_selected(self) -> None:
+        if not self._can_manage_products:
+            messagebox.showwarning("Sin permiso", "No tienes permiso para editar productos.", parent=self)
+            return
         pid = self._selected_id()
         if pid is None:
             return
@@ -145,6 +152,9 @@ class ProductsFrame(tk.Frame):
             self.refresh()
 
     def _delete_selected(self) -> None:
+        if not self._can_manage_products:
+            messagebox.showwarning("Sin permiso", "No tienes permiso para eliminar productos.", parent=self)
+            return
         pid = self._selected_id()
         if pid is None:
             return
@@ -154,6 +164,9 @@ class ProductsFrame(tk.Frame):
             self.refresh()
 
     def _adjust_stock(self) -> None:
+        if not self._can_manage_products:
+            messagebox.showwarning("Sin permiso", "No tienes permiso para ajustar stock.", parent=self)
+            return
         pid = self._selected_id()
         if pid is None:
             return
@@ -168,6 +181,9 @@ class ProductsFrame(tk.Frame):
             self.refresh()
 
     def _manage_categories(self) -> None:
+        if not self._can_manage_products:
+            messagebox.showwarning("Sin permiso", "No tienes permiso para gestionar categorías.", parent=self)
+            return
         CategoriesDialog(self).grab_set()
         self.wait_window(self.winfo_children()[-1])
         self.refresh()
@@ -197,7 +213,7 @@ class ProductDialog(tk.Toplevel):
     def _build(self):
         pad = dict(padx=16, pady=4)
         tk.Label(self, text="Datos del Producto", font=FONT_H2,
-                 bg=PANEL_BG, fg=TEXT).pack(**pad, pady=(16, 8))
+                 bg=PANEL_BG, fg=TEXT).pack(padx=16, pady=(16, 8))
 
         form = tk.Frame(self, bg=PANEL_BG)
         form.pack(fill="both", padx=16, pady=4)
@@ -274,20 +290,35 @@ class ProductDialog(tk.Toplevel):
             messagebox.showerror("Error", "Precio/Costo/Stock deben ser números.", parent=self)
             return
 
+        barcode = self._vars["barcode"].get().strip()
+        
+        # Validar código de barras único
+        if barcode:
+            existing = inventory.get_product_by_barcode(barcode)
+            if existing:
+                # Si es edición, permitir si es el mismo producto
+                if not self._product or existing["id"] != self._product["id"]:
+                    messagebox.showerror(
+                        "Error",
+                        f"Código de barras '{barcode}' ya existe en el producto: {existing['name']}",
+                        parent=self
+                    )
+                    return
+
         cat_name = self._vars["category_id"].get()
         cat_id   = self._cat_map.get(cat_name)
 
         if self._product:
             inventory.update_product(
                 self._product["id"], name, price, cost, stock, min_s,
-                self._vars["barcode"].get().strip(),
+                barcode,
                 self._vars["description"].get().strip(),
                 cat_id, self._vars["unit"].get().strip() or "pza",
             )
         else:
             inventory.add_product(
                 name=name, price=price, cost=cost, stock=stock, min_stock=min_s,
-                barcode=self._vars["barcode"].get().strip(),
+                barcode=barcode,
                 description=self._vars["description"].get().strip(),
                 category_id=cat_id,
                 unit=self._vars["unit"].get().strip() or "pza",

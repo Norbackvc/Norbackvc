@@ -31,18 +31,26 @@ def _period_where(period: str, aliased: bool = False) -> str:
     return mapping[period]
 
 
-def sales_summary(period: str = "today") -> Dict[str, Any]:
+def sales_summary(period: str = "today", selected_date: str | None = None) -> Dict[str, Any]:
     """
     Return totals for the given period.
-    period: 'today' | 'week' | 'month' | 'year'
+    period: 'today' | 'week' | 'month' | 'year' | 'date'
     """
     conn = get_connection()
-    where = _period_where(period)
-    row = conn.execute(
-        "SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total, "
-        "COALESCE(SUM(tax),0) as tax, COALESCE(SUM(discount),0) as discount "
-        f"FROM sales WHERE status='completed' AND {where}"
-    ).fetchone()
+    if period == "date" and selected_date:
+        row = conn.execute(
+            "SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total, "
+            "COALESCE(SUM(tax),0) as tax, COALESCE(SUM(discount),0) as discount "
+            "FROM sales WHERE status='completed' AND date(created_at) = date(?)",
+            (selected_date,),
+        ).fetchone()
+    else:
+        where = _period_where(period)
+        row = conn.execute(
+            "SELECT COUNT(*) as count, COALESCE(SUM(total),0) as total, "
+            "COALESCE(SUM(tax),0) as tax, COALESCE(SUM(discount),0) as discount "
+            f"FROM sales WHERE status='completed' AND {where}"
+        ).fetchone()
     conn.close()
     return dict(row)
 
@@ -62,8 +70,13 @@ def sales_by_day(days: int = 30) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
-def top_products(limit: int = 10, period: str = "month") -> List[Dict]:
-    where = _period_where(period, aliased=True)
+def top_products(limit: int = 10, period: str = "month", selected_date: str | None = None) -> List[Dict]:
+    if period == "date" and selected_date:
+        where = "date(s.created_at) = date(?)"
+        params = (selected_date, limit)
+    else:
+        where = _period_where(period, aliased=True)
+        params = (limit,)
     conn = get_connection()
     rows = conn.execute(
         f"""SELECT si.product_name,
@@ -75,7 +88,7 @@ def top_products(limit: int = 10, period: str = "month") -> List[Dict]:
             GROUP BY si.product_name
             ORDER BY qty_sold DESC
             LIMIT ?""",
-        (limit,),
+        params,
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -105,6 +118,55 @@ def recent_sales(limit: int = 20) -> List[Dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_sale_by_folio(folio: str) -> Dict | None:
+    conn = get_connection()
+    sale = conn.execute("SELECT * FROM sales WHERE folio=?", (folio,)).fetchone()
+    if not sale:
+        conn.close()
+        return None
+    items = conn.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale["id"],)).fetchall()
+    conn.close()
+    data = dict(sale)
+    data["items"] = [dict(i) for i in items]
+    return data
+
+
+def delete_sale_by_folio(folio: str) -> bool:
+    """Delete one sale (and its items) by folio. Returns True if deleted."""
+    conn = get_connection()
+    sale = conn.execute("SELECT id FROM sales WHERE folio=?", (folio,)).fetchone()
+    if not sale:
+        conn.close()
+        return False
+    try:
+        conn.execute("DELETE FROM sale_items WHERE sale_id=?", (sale["id"],))
+        conn.execute("DELETE FROM sales WHERE id=?", (sale["id"],))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_all_sales() -> int:
+    """Delete all sales and sale items. Returns number of deleted sales."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS c FROM sales").fetchone()
+        count = int(row["c"] if row else 0)
+        conn.execute("DELETE FROM sale_items")
+        conn.execute("DELETE FROM sales")
+        conn.commit()
+        return count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def inventory_value() -> Dict[str, Any]:

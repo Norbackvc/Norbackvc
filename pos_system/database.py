@@ -3,9 +3,18 @@ Database module: creates and manages the SQLite database for the POS system.
 """
 import sqlite3
 import os
+import sys
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "pos_data.db"
+
+def _resolve_db_path() -> Path:
+    # In a PyInstaller build, keep DB next to the executable for persistence.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "pos_data.db"
+    return Path(__file__).resolve().parent / "pos_data.db"
+
+
+DB_PATH = _resolve_db_path()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -28,10 +37,32 @@ def initialize_database() -> None:
             password  TEXT    NOT NULL,
             role      TEXT    NOT NULL DEFAULT 'cashier',
             full_name TEXT    NOT NULL DEFAULT '',
+            can_manage_products INTEGER NOT NULL DEFAULT 0,
+            can_manage_customers INTEGER NOT NULL DEFAULT 0,
+            can_view_reports INTEGER NOT NULL DEFAULT 0,
+            can_manage_users INTEGER NOT NULL DEFAULT 0,
+            can_apply_discounts INTEGER NOT NULL DEFAULT 1,
+            can_delete_receipts INTEGER NOT NULL DEFAULT 0,
+            can_delete_all_receipts INTEGER NOT NULL DEFAULT 0,
             active    INTEGER NOT NULL DEFAULT 1,
             created_at TEXT   NOT NULL DEFAULT (datetime('now'))
         )
     """)
+
+    # Backward-compatible migrations for existing databases.
+    user_cols = {r["name"] for r in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    migrations = [
+        ("can_manage_products", "INTEGER NOT NULL DEFAULT 0"),
+        ("can_manage_customers", "INTEGER NOT NULL DEFAULT 0"),
+        ("can_view_reports", "INTEGER NOT NULL DEFAULT 0"),
+        ("can_manage_users", "INTEGER NOT NULL DEFAULT 0"),
+        ("can_apply_discounts", "INTEGER NOT NULL DEFAULT 1"),
+        ("can_delete_receipts", "INTEGER NOT NULL DEFAULT 0"),
+        ("can_delete_all_receipts", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col_name, col_def in migrations:
+        if col_name not in user_cols:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
 
     # ── Categories ──────────────────────────────────────────────────────────
     cursor.execute("""
@@ -122,6 +153,17 @@ def initialize_database() -> None:
         INSERT OR IGNORE INTO users (username, password, role, full_name)
         VALUES ('admin', ?, 'admin', 'Administrador')
     """, (default_pw,))
+    cursor.execute("""
+        UPDATE users
+        SET can_manage_products=1,
+            can_manage_customers=1,
+            can_view_reports=1,
+            can_manage_users=1,
+            can_apply_discounts=1,
+            can_delete_receipts=1,
+            can_delete_all_receipts=1
+        WHERE role='admin'
+    """)
 
     # ── Seed default categories ───────────────────────────────────────────────
     for cat in ("General", "Alimentos", "Bebidas", "Electrónica", "Ropa", "Otros"):

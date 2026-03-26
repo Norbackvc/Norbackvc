@@ -10,7 +10,7 @@ from .styles import *
 class LoginWindow(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("POS – Iniciar Sesión")
+        self.title("POS 2.0 – Iniciar Sesión")
         self.resizable(False, False)
         self.configure(bg=DARK_BG)
         self._center(380, 440)
