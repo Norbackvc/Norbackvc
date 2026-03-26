@@ -1,24 +1,65 @@
 # 🛒 Punto de Venta (POS) en Python
 
-Sistema de Punto de Venta completo desarrollado en Python puro con interfaz gráfica (Tkinter) y base de datos SQLite — **sin dependencias externas**.
+Sistema de Punto de Venta completo desarrollado en Python puro con interfaz gráfica (Tkinter) y base de datos SQLite — **sin dependencias externas en el código**.
 
 ## Requisitos
 
-- Python 3.8 o superior
-- Tkinter (incluido con Python; en Linux: `sudo apt install python3-tk`)
+- **Python 3.8 o superior** ([Descargar](https://www.python.org/downloads/))
+- **Tkinter** (incluido con Python; en Linux instala: `sudo apt install python3-tk`)
 
-## Instalación y ejecución
+## 🚀 Ejecución rápida
 
+### En Windows:
+Haz doble clic en **`run.bat`** o ejecuta:
 ```bash
-git clone https://github.com/Norbackvc/Norbackvc.git
-cd Norbackvc
+run.bat
+```
+
+### En Linux/Mac:
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+### O desde terminal (cualquier SO):
+```bash
 python pos_system/main.py
 ```
 
-> La base de datos se crea automáticamente en la primera ejecución.  
-> **Usuario por defecto:** `admin` | **Contraseña:** `admin123`
+## Datos de acceso por defecto
 
-## Características
+- **Usuario:** `admin`
+- **Contraseña:** `admin123`
+
+> ⚠️ **Importante:** Cambia la contraseña del admin en la sección de Configuración después del primer inicio.
+
+## 📦 Compilar EXE (opcional)
+
+Si quieres crear un ejecutable standalone (no requiere Python instalado):
+
+### Windows:
+1. Instala PyInstaller:
+   ```bash
+   pip install PyInstaller pyinstaller-hooks-contrib
+   ```
+
+2. Ejecuta el script de compilación:
+   ```bash
+   build_exe.bat
+   ```
+
+3. El EXE estará en la carpeta `dist/`:
+   ```bash
+   dist/NorbackPOS.exe
+   ```
+
+### Linux/Mac:
+```bash
+pip install -r requirements-build.txt
+python -m PyInstaller --onefile --windowed --name NorbackPOS pos_system/main.py
+```
+
+
 
 | Módulo | Descripción |
 |--------|-------------|
@@ -52,4 +93,4 @@ pos_system/
 
 ## Licencia
 
-Todos los Derechos Reservados @Norbackvc 2026
+MIT
